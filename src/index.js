@@ -210,8 +210,10 @@ app.use("/fee-estimate", feeEstimateRouter);
 app.use("/network-status", etagMiddleware, networkStatusRouter);
 app.use("/fee-estimate", etagMiddleware, feeEstimateRouter);
 const accountCounterpartiesRouter = require("./routes/account.counterparties");
+const accountsRouter = require("./routes/accounts");
 app.use("/account", etagMiddleware, accountRouter);
 app.use("/account", etagMiddleware, accountCounterpartiesRouter);
+app.use("/accounts", accountsRouter);
 app.use("/transactions", transactionsRouter);
 app.use("/asset", etagMiddleware, assetRouter);
 app.use("/dex", etagMiddleware, dexRouter);
@@ -266,6 +268,7 @@ app.get("/", (req, res) => {
         { method: "GET", path: "/dex/spread/:sellAsset/:buyAsset", description: "Calculate bid-ask spread for a DEX trading pair" },
         { method: "GET", path: "/dex/imbalance/:sellAsset/:buyAsset", description: "Detect buy/sell pressure imbalance on a trading pair" },
         { method: "GET", path: "/account/:id/counterparties", description: "Analyze frequent payment counterparties for an account" },
+        { method: "POST", path: "/accounts/transaction-counts", description: "Batch transaction count for up to 20 Stellar addresses (count, firstTransactionAt, lastTransactionAt per address)" },
         { method: "GET", path: "/network/ledger-timing", description: "Analyze network ledger close time consistency" },
         { method: "GET", path: "/liquidity-pools/:id/profitability", description: "Estimate annualized fee income for a liquidity pool" },
 
