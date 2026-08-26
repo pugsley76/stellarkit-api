@@ -1,197 +1,214 @@
 const express = require("express");
 const router = express.Router();
-const { server } = require("../config/stellar");
-const { success, toISOTimestamp } = require("../utils/response");
-const { validateAccountId } = require("../utils/validators");
-const cacheService = require("../services/cache");
-const cacheTTL = require("../config/cacheConfig");
-
-const BATCH_TRANSACTION_COUNTS_MAX = 20;
-
-/**
- * Fetches the transaction count and first/last transaction timestamps for a
- * single Stellar account by paging through its full transaction history.
- *
- * Non-existent accounts (Horizon 404) resolve to the zero-state shape
- * { count: 0, firstTransactionAt: null, lastTransactionAt: null } rather
- * than throwing, so a single missing address does not abort the whole batch.
- *
- * @param {string} address - Stellar public key (G...).
- * @returns {Promise<{ count: number, firstTransactionAt: string|null, lastTransactionAt: string|null }>}
- */
-async function fetchTransactionCountForAddress(address) {
-  // Check cache first
-  const cacheKey = `transaction-count:${address}`;
-  const cached = cacheService.get(cacheKey);
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  let count = 0;
-  let firstTransactionAt = null;
-  let lastTransactionAt = null;
-  let cursor;
-
-  try {
-    // Verify the account exists before paging — loadAccount gives a clean 404.
-    await server.loadAccount(address);
-
-    do {
-      let query = server
-        .transactions()
-        .forAccount(address)
-        .limit(200)
-        .order("asc");
-
-      if (cursor) query = query.cursor(cursor);
-
-      const page = await query.call();
-      const records = page.records || [];
-
-      if (records.length === 0) break;
-
-      // Capture the very first transaction timestamp on the first page.
-      if (count === 0) {
-        firstTransactionAt = toISOTimestamp(records[0].created_at);
-      }
-
-      // Always update lastTransactionAt as we page forward.
-      lastTransactionAt = toISOTimestamp(records[records.length - 1].created_at);
-
-      count += records.length;
-      cursor = records[records.length - 1].paging_token;
-
-      if (records.length < 200) break;
-    } while (true); // eslint-disable-line no-constant-condition
-  } catch (err) {
-    // Horizon 404 means the account does not exist — return the zero-state.
-    if (err && err.response && err.response.status === 404) {
-      return { count: 0, firstTransactionAt: null, lastTransactionAt: null };
-    }
-    // Any other error is unexpected — propagate it so the batch handler can
-    // surface it as a 500 rather than silently swallowing it.
-    throw err;
-  }
-
-  const result = { count, firstTransactionAt, lastTransactionAt };
-
-  // Cache the result so repeated requests for the same address within the TTL
-  // window don't hammer Horizon.
-  cacheService.set(cacheKey, result, cacheTTL.transactionCount);
-
-  return result;
-}
+const { server, NETWORK } = require("../config/stellar");
+const { success } = require("../utils/response");
+const {
+  validateAccountId,
+  validateAssetCode,
+} = require("../utils/validators");
+const { isNonNativeAsset } = require("../utils/assetHelpers");
 
 /**
- * POST /accounts/transaction-counts
+ * POST /accounts/trust-status
  *
- * Accepts a JSON body with an array of up to 20 Stellar account addresses and
- * returns the transaction count plus first/last transaction timestamps for each
- * address in a single response. Designed for leaderboard and analytics use
- * cases where fetching counts one-by-one would be prohibitively slow.
+ * Checks whether multiple accounts hold and are authorized for a specific asset.
+ * Useful for developers managing asset distribution across many accounts.
  *
  * Request body:
- *   { "addresses": ["G...", "G...", ...] }
+ *   {
+ *     "addresses": ["G...", "G...", ...],  // max 30 addresses
+ *     "asset": {
+ *       "code": "USDC",
+ *       "issuer": "G..."
+ *     }
+ *   }
  *
- * Constraints:
- *   - `addresses` must be a non-empty array.
- *   - Maximum of 20 addresses per request; exceeding this returns HTTP 400.
- *   - Each address must be a valid Stellar Ed25519 public key (G..., 56 chars).
- *   - Duplicate addresses are deduplicated before processing.
- *
- * Response shape:
+ * Response:
  *   {
  *     "success": true,
  *     "data": {
  *       "results": {
- *         "G...": { "count": 42, "firstTransactionAt": "2021-03-01T00:00:00.000Z", "lastTransactionAt": "2024-07-15T10:30:00.000Z" },
- *         "G...": { "count": 0,  "firstTransactionAt": null, "lastTransactionAt": null }
+ *         "G...": {
+ *           "hasTrustline": true,
+ *           "isAuthorized": true,
+ *           "balance": "100.5000000"
+ *         },
+ *         "G...": {
+ *           "hasTrustline": false,
+ *           "isAuthorized": false,
+ *           "balance": null
+ *         }
  *       }
  *     }
  *   }
  *
- * Error responses:
- *   - 400: `addresses` missing, not an array, empty, or contains more than 20 items.
- *   - 400: Any address fails Ed25519 validation (reports the first invalid address).
+ * Acceptance Criteria:
+ * - Accepts up to 30 addresses
+ * - Returns 400 if > 30 addresses provided
+ * - Returns 400 if any address is invalid
+ * - Returns 400 if asset code or issuer is invalid
+ * - Non-existent accounts return { hasTrustline: false, isAuthorized: false, balance: null }
+ * - Existing accounts without trustline return { hasTrustline: false, isAuthorized: false, balance: null }
+ * - Existing accounts with trustline return { hasTrustline: true, isAuthorized: boolean, balance: string }
  *
  * @example
- *   POST /accounts/transaction-counts
- *   Content-Type: application/json
- *
- *   { "addresses": ["GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"] }
+ * POST /accounts/trust-status
+ * {
+ *   "addresses": ["GABC...", "GDEF..."],
+ *   "asset": { "code": "USDC", "issuer": "GBUQWP..." }
+ * }
  */
-router.post("/transaction-counts", async (req, res, next) => {
+router.post("/trust-status", async (req, res, next) => {
   try {
-    const { addresses } = req.body || {};
+    const { addresses, asset } = req.body;
 
-    // ── Validate `addresses` field ─────────────────────────────────────────
-
-    if (!Array.isArray(addresses)) {
-      const err = new Error(
-        "Request body must include an 'addresses' array of Stellar public keys."
-      );
+    // Validate addresses array
+    if (!addresses || !Array.isArray(addresses)) {
+      const err = new Error("Property 'addresses' is required and must be an array.");
       err.isValidation = true;
+      err.status = 400;
       err.field = "addresses";
-      err.receivedValue = addresses === undefined ? "undefined" : String(addresses).slice(0, 50);
-      err.expectedFormat = '{ "addresses": ["G...", "G..."] }';
-      return next(err);
+      throw err;
     }
 
     if (addresses.length === 0) {
-      const err = new Error("'addresses' array must contain at least one address.");
+      const err = new Error("At least one address is required.");
       err.isValidation = true;
+      err.status = 400;
       err.field = "addresses";
-      err.receivedValue = "[]";
-      err.expectedFormat = '{ "addresses": ["G...", "G..."] }';
-      return next(err);
+      throw err;
     }
 
-    if (addresses.length > BATCH_TRANSACTION_COUNTS_MAX) {
-      const err = new Error(
-        `Too many addresses. Maximum allowed is ${BATCH_TRANSACTION_COUNTS_MAX}, but ${addresses.length} were provided.`
-      );
+    if (addresses.length > 30) {
+      const err = new Error("Maximum of 30 addresses allowed per request.");
       err.isValidation = true;
+      err.status = 400;
       err.field = "addresses";
-      err.receivedValue = String(addresses.length);
-      err.expectedFormat = `Array of 1–${BATCH_TRANSACTION_COUNTS_MAX} Stellar public keys`;
-      return next(err);
+      throw err;
     }
 
-    // Validate every address before touching Horizon so we fail fast with a
-    // clear error message that names the offending address.
+    // Validate each address
     for (const address of addresses) {
-      validateAccountId(address);
-    }
-
-    // Deduplicate to avoid redundant Horizon calls for the same address.
-    const uniqueAddresses = [...new Set(addresses)];
-
-    // Fetch all counts in parallel — Horizon is the bottleneck, so firing
-    // all requests concurrently significantly reduces total latency.
-    const settlements = await Promise.allSettled(
-      uniqueAddresses.map((address) => fetchTransactionCountForAddress(address))
-    );
-
-    // Build the results map. A rejected settlement (unexpected Horizon error)
-    // is surfaced as a zero-state entry so the batch always returns a complete
-    // map rather than a partial 500.
-    const results = {};
-    for (let i = 0; i < uniqueAddresses.length; i++) {
-      const address = uniqueAddresses[i];
-      const settlement = settlements[i];
-
-      if (settlement.status === "fulfilled") {
-        results[address] = settlement.value;
-      } else {
-        // Unexpected error for this address — zero-state with an error hint.
-        results[address] = {
-          count: 0,
-          firstTransactionAt: null,
-          lastTransactionAt: null,
-          error: "Failed to retrieve transaction count for this address.",
-        };
+      if (typeof address !== "string") {
+        const err = new Error(`Address must be a string, received ${typeof address}.`);
+        err.isValidation = true;
+        err.status = 400;
+        err.field = "addresses";
+        err.receivedValue = String(address).slice(0, 50);
+        throw err;
+      }
+      try {
+        validateAccountId(address);
+      } catch (validationErr) {
+        const err = new Error(`Invalid address "${address}": ${validationErr.message}`);
+        err.isValidation = true;
+        err.status = 400;
+        err.field = "addresses";
+        err.receivedValue = address;
+        throw err;
       }
     }
+
+    // Validate asset
+    if (!asset || typeof asset !== "object") {
+      const err = new Error("Property 'asset' is required and must be an object with 'code' and 'issuer'.");
+      err.isValidation = true;
+      err.status = 400;
+      err.field = "asset";
+      throw err;
+    }
+
+    const { code, issuer } = asset;
+
+    if (!code || typeof code !== "string") {
+      const err = new Error("Asset 'code' is required and must be a string.");
+      err.isValidation = true;
+      err.status = 400;
+      err.field = "asset.code";
+      err.receivedValue = code;
+      throw err;
+    }
+
+    if (!issuer || typeof issuer !== "string") {
+      const err = new Error("Asset 'issuer' is required and must be a string.");
+      err.isValidation = true;
+      err.status = 400;
+      err.field = "asset.issuer";
+      err.receivedValue = issuer;
+      throw err;
+    }
+
+    // Validate asset code and issuer
+    try {
+      validateAssetCode(code);
+    } catch (codeErr) {
+      const err = new Error(`Invalid asset code "${code}": ${codeErr.message}`);
+      err.isValidation = true;
+      err.status = 400;
+      err.field = "asset.code";
+      err.receivedValue = code;
+      throw err;
+    }
+
+    try {
+      validateAccountId(issuer);
+    } catch (issuerErr) {
+      const err = new Error(`Invalid issuer "${issuer}": ${issuerErr.message}`);
+      err.isValidation = true;
+      err.status = 400;
+      err.field = "asset.issuer";
+      err.receivedValue = issuer;
+      throw err;
+    }
+
+    const normalizedCode = code.toUpperCase();
+
+    // Fetch account data in parallel
+    const results = {};
+
+    const accountDataPromises = addresses.map(async (address) => {
+      try {
+        const account = await server.loadAccount(address);
+        const trustlines = account.balances || [];
+
+        // Find trustline for the specified asset
+        const trustline = trustlines.find(
+          (b) =>
+            isNonNativeAsset(b) &&
+            b.asset_code === normalizedCode &&
+            b.asset_issuer === issuer
+        );
+
+        if (trustline) {
+          results[address] = {
+            hasTrustline: true,
+            isAuthorized: trustline.is_authorized || false,
+            balance: trustline.balance,
+          };
+        } else {
+          // Account exists but no trustline for this asset
+          results[address] = {
+            hasTrustline: false,
+            isAuthorized: false,
+            balance: null,
+          };
+        }
+      } catch (err) {
+        // Account not found or other error - treat as no trustline
+        if (err && err.response && err.response.status === 404) {
+          results[address] = {
+            hasTrustline: false,
+            isAuthorized: false,
+            balance: null,
+          };
+        } else {
+          // For other errors, re-throw to let error handler deal with it
+          throw err;
+        }
+      }
+    });
+
+    await Promise.all(accountDataPromises);
 
     return success(res, { results });
   } catch (err) {

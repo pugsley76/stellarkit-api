@@ -18,6 +18,8 @@
  *   CACHE_TTL_SIGNING_KEYS_MS   — /account/:id/signing-keys     (default: 20 000 ms)
  *   CACHE_TTL_FREEZE_CHECK_MS   — /account/:id/freeze-status     (default: 30 000 ms)
  *   CACHE_TTL_BALANCES_BY_SPONSOR_MS — /claimable-balances/by-sponsor (default: 30 000 ms)
+ *   CACHE_TTL_FREEZE_CHECK_MS   — /account/:id/freeze-status     (default: 30 000 ms)
+ *   CACHE_TTL_SIGNING_KEYS_MS   — /account/:id/signing-keys      (default: 20 000 ms)
  *
  * The legacy CACHE_TTL_MS variable is still respected as a global fallback so
  * existing deployments are not broken.
@@ -131,6 +133,18 @@ const cacheTTL = {
   poolTrades: msToSeconds(
     process.env.CACHE_TTL_POOL_TRADES_MS,
     globalFallbackMs
+  ),
+
+  /** /account/:id/freeze-status — changes only when issuer modifies auth flags */
+  freezeCheck: msToSeconds(
+    process.env.CACHE_TTL_FREEZE_CHECK_MS,
+    30000
+  ),
+
+  /** /account/:id/signing-keys — changes only when account modifies signers */
+  signingKeys: msToSeconds(
+    process.env.CACHE_TTL_SIGNING_KEYS_MS,
+    20000
   ),
 };
 

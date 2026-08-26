@@ -5,6 +5,25 @@ const { success } = require("../utils/response");
 const StellarKitError = require("../utils/StellarKitError");
 const cacheService = require("../services/cache");
 const cacheTTL = require("../config/cacheConfig");
+const { startHorizonTimer, stopHorizonTimer } = require("../middleware/requestLogger");
+
+/**
+ * Wraps a Horizon-backed async call with timing so the request logger can
+ * include horizonResponseTimeMs in the structured log entry.
+ *
+ * @template T
+ * @param {import('express').Request} req
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+async function withHorizonTiming(req, fn) {
+  startHorizonTimer(req);
+  try {
+    return await fn();
+  } finally {
+    stopHorizonTimer(req);
+  }
+}
 
 function isFreshRequest(query) {
   return query.fresh === true || query.fresh === "true";
@@ -31,7 +50,7 @@ router.get("/protocol-version", async (req, res, next) => {
       return success(res, cached);
     }
 
-    const response = await fetch(horizonUrl);
+    const response = await withHorizonTiming(req, () => fetch(horizonUrl));
     if (!response.ok) {
       throw new StellarKitError(
         "Unable to fetch network metadata from Stellar Horizon.",
@@ -110,7 +129,7 @@ router.get("/validators", async (req, res, next) => {
     }
 
     const url = `${horizonUrl}/accounts?order=desc&limit=200`;
-    const response = await fetch(url);
+    const response = await withHorizonTiming(req, () => fetch(url));
 
     if (!response.ok) {
       const horizonErr = new Error("Unable to fetch validator data from Horizon. Please try again.");
@@ -188,8 +207,8 @@ router.get("/base-fee", async (req, res, next) => {
       }
     }
 
-    const feeStats = await server.feeStats();
-    const ledgerResponse = await server.ledgers().order("desc").limit(1).call();
+    const feeStats = await withHorizonTiming(req, () => server.feeStats());
+    const ledgerResponse = await withHorizonTiming(req, () => server.ledgers().order("desc").limit(1).call());
     const latestLedger = (ledgerResponse.records || [])[0] || {};
 
     const baseFeeStroops = parseInt(feeStats.last_ledger_base_fee, 10);
@@ -241,8 +260,8 @@ router.get("/fee-percentiles", async (req, res, next) => {
       }
     }
 
-    const feeStats = await server.feeStats();
-    const ledgerResponse = await server.ledgers().order("desc").limit(1).call();
+    const feeStats = await withHorizonTiming(req, () => server.feeStats());
+    const ledgerResponse = await withHorizonTiming(req, () => server.ledgers().order("desc").limit(1).call());
     const latestLedger = (ledgerResponse.records || [])[0] || {};
 
     const feeCharged = feeStats.fee_charged || {};
@@ -252,11 +271,9 @@ router.get("/fee-percentiles", async (req, res, next) => {
     const maxFeeStroops = parseStroops(feeAccepted.max || feeCharged.max);
     const baseFeeStroops = parseStroops(feeStats.last_ledger_base_fee);
 
-    const txResponse = await server
-      .transactions()
-      .order("desc")
-      .limit(TX_FETCH_LIMIT)
-      .call();
+    const txResponse = await withHorizonTiming(req, () =>
+      server.transactions().order("desc").limit(TX_FETCH_LIMIT).call()
+    );
     const txRecords = txResponse.records || [];
     const fees = txRecords
       .map((tx) => parseInt(tx.max_fee, 10))

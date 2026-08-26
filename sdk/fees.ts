@@ -144,11 +144,16 @@ export class FeesModule {
    * Analyzes recent ledger capacity usage and returns actionable advice
    * on when to submit transactions and which fee tier to use.
    *
+   * @param options.fresh - When `true`, bypasses the server-side cache and fetches live data.
    * @returns Resolves to the surge status data payload.
    * @throws {StellarKitError} On non-2xx response.
    */
-  async getSurgeStatus(): Promise<SurgeStatusData> {
-    return this._get<SurgeStatusData>("/fee-estimate/surge-status");
+  async getSurgeStatus(options?: { fresh?: boolean }): Promise<SurgeStatusData> {
+    const fresh = options?.fresh ?? false;
+    const params = new URLSearchParams();
+    if (fresh) params.set("fresh", "true");
+    const query = params.toString();
+    return this._get<SurgeStatusData>(`/fee-estimate/surge-status${query ? `?${query}` : ""}`);
   }
 
   /**

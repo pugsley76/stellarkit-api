@@ -23,10 +23,14 @@ const apiKeyMiddleware = require("./middleware/apiKeyAuth");
 const sanitize = require("./middleware/sanitize");
 const coerceQueryParams = require("./middleware/coerceQueryParams");
 const etagMiddleware = require("./middleware/etag");
+const metricsService = require("./services/metrics");
 
 const networkStatusRouter = require("./routes/networkStatus");
+const webhooksRouter = require("./routes/webhooks");
+const contractEventPoller = require("./services/contractEventPoller");
 const feeEstimateRouter = require("./routes/feeEstimate");
 const accountRouter = require("./routes/account");
+const accountsRouter = require("./routes/accounts");
 const transactionsRouter = require("./routes/transactions");
 const assetRouter = require("./routes/asset");
 const dexRouter = require("./routes/dex");
@@ -36,9 +40,12 @@ const utilsRouter = require("./routes/utils");
 const stellarTomlRouter = require("./routes/stellarToml");
 const claimableBalancesRouter = require("./routes/claimableBalances");
 const cacheStatsRouter = require("./routes/cacheStats");
+const metricsRouter = require("./routes/metrics");
+const webhooksRouter = require("./routes/webhooks");
 const sorobanRouter = require("./routes/soroban");
 const networkRouter = require("./routes/network");
 const assetsOverviewRouter = require("./routes/assetsOverview");
+const webhooksRouter = require("./routes/webhooks");
 
 const app = express();
 // Disable server identification header for security
@@ -46,6 +53,9 @@ app.disable("x-powered-by");
 const { normalizeAmountFields } = require("./utils/response");
 
 const PORT = process.env.PORT || 3000;
+
+// Captured once at process start so /health can report accurate uptime.
+const SERVER_STARTED_AT = new Date().toISOString();
 
 async function warmNetworkStatusCache({
   logger: customLogger = logger,
@@ -176,6 +186,12 @@ app.use(hpp({ whitelist: ["limit", "order", "cursor", "operations"] }));
 // ── Rate Limiting ───────────────────────────────────────────────────────────
 app.use(rateLimiter);
 
+// ── Metrics request counter ─────────────────────────────────────────────────
+app.use((req, res, next) => {
+  metricsService.incrementRequests();
+  next();
+});
+
 // ── Input Sanitization ──────────────────────────────────────────────────────
 app.use(sanitize);
 app.use(coerceQueryParams);
@@ -195,6 +211,9 @@ app.get("/health", (req, res) => {
       version: require("../package.json").version,
       timestamp: new Date().toISOString(),
       network: process.env.STELLAR_NETWORK || "testnet",
+      uptimeSeconds: Math.floor(process.uptime()),
+      nodeVersion: process.version,
+      startedAt: SERVER_STARTED_AT,
     },
   });
 });
@@ -224,10 +243,13 @@ app.use("/utils", utilsRouter);
 app.use("/stellar-toml", stellarTomlRouter);
 app.use("/claimable-balances", etagMiddleware, claimableBalancesRouter);
 app.use("/cache", cacheStatsRouter);
+app.use("/metrics", metricsRouter);
+app.use("/webhooks", webhooksRouter);
 app.use("/soroban", sorobanRouter);
 app.use("/network", etagMiddleware, networkRouter);
 const transactionEffectsRouter = require("./routes/transaction.effects");
 app.use("/transaction", etagMiddleware, transactionEffectsRouter);
+app.use("/webhooks", webhooksRouter);
 
 // ── Root
 app.get("/", (req, res) => {
@@ -637,6 +659,7 @@ function startServer({
   });
 
   setupWebSocketHook(httpServer);
+  contractEventPoller.start();
   return httpServer;
 }
 

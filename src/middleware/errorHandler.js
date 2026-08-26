@@ -13,6 +13,7 @@ const {
   isHorizonTimeoutError,
 } = require("../utils/errors");
 const { NETWORK } = require("../config/stellar");
+const metrics = require("../services/metrics");
 
 /**
  * Logs 4xx and 5xx responses using the structured logger.
@@ -37,6 +38,18 @@ function logError(status, req, message) {
       message
     );
   }
+}
+
+/**
+ * Send an error response AND record the status code in the metrics service.
+ *
+ * @param {import('express').Response} res
+ * @param {number} status
+ * @param {object} body
+ */
+function errorResponse(res, status, body) {
+  metrics.incrementError(status);
+  return res.status(status).json(body);
 }
 
 const ACCOUNT_MERGE_FAILURES = {
@@ -145,7 +158,7 @@ function errorHandler(err, req, res, next) {
       "Check your HORIZON_URL and verify the node is reachable. See https://status.stellar.org for network status."
     );
     logError(503, req, ske.message);
-    return res.status(503).json(withRequestId({
+    return errorResponse(res, 503, withRequestId({
       success: false,
       error: ske.toJSON(),
     }, req));
@@ -162,7 +175,7 @@ function errorHandler(err, req, res, next) {
       "The offer may have already been filled, cancelled, or the offer ID may be incorrect."
     );
     logError(404, req, ske.message);
-    return res.status(404).json(withRequestId({
+    return errorResponse(res, 404, withRequestId({
       success: false,
       error: ske.toJSON(),
     }, req));
@@ -187,7 +200,7 @@ function errorHandler(err, req, res, next) {
         },
       };
       logError(status, req, body.error.message);
-      return res.status(status).json(withRequestId(body, req));
+      return errorResponse(res, status, withRequestId(body, req));
     }
 
     const mappedStatus = mapHorizonErrorToStatus(resultCode);
@@ -196,7 +209,7 @@ function errorHandler(err, req, res, next) {
     if (isTransactionSubmissionFailure(horizonError)) {
       const body = buildTransactionSubmissionFailedError(horizonError);
       logError(status, req, body.message);
-      return res.status(status).json(withRequestId({ success: false, error: body }, req));
+      return errorResponse(res, status, withRequestId({ success: false, error: body }, req));
     }
 
     const message = horizonError.detail || horizonError.title || "Horizon Error";
@@ -222,13 +235,13 @@ function errorHandler(err, req, res, next) {
       }
     }
 
-    return res.status(status).json(withRequestId(body, req));
+    return errorResponse(res, status, withRequestId(body, req));
   }
 
   // StellarKitError instances — already structured
   if (err instanceof StellarKitError) {
     logError(err.statusCode, req, err.message);
-    return res.status(err.statusCode).json(withRequestId({
+    return errorResponse(res, err.statusCode, withRequestId({
       success: false,
       error: err.toJSON(),
     }, req));
@@ -236,7 +249,7 @@ function errorHandler(err, req, res, next) {
   // ReferenceError and TypeError — catch runtime exceptions
   if (err instanceof ReferenceError || err instanceof TypeError) {
     logError(500, req, err.message);
-    return res.status(500).json(withRequestId({
+    return errorResponse(res, 500, withRequestId({
       success: false,
       error: {
         type: "InternalError",
@@ -258,7 +271,7 @@ function errorHandler(err, req, res, next) {
       `Reduce your request body size to under ${maxBodySize}.`
     );
     logError(413, req, ske.message);
-    return res.status(413).json(withRequestId({
+    return errorResponse(res, 413, withRequestId({
       success: false,
       error: ske.toJSON(),
     }, req));
@@ -268,7 +281,7 @@ function errorHandler(err, req, res, next) {
   // TransactionNotFound errors (Horizon 404 on transaction lookup)
   if (err.isTransactionNotFound) {
     logError(404, req, err.message);
-    return res.status(404).json(withRequestId({
+    return errorResponse(res, 404, withRequestId({
       success: false,
       error: {
         type: "NotFound",
@@ -281,7 +294,7 @@ function errorHandler(err, req, res, next) {
   // AccountNotFound errors (Horizon 404 on account lookup)
   if (err.isAccountNotFound) {
     logError(404, req, err.message);
-    return res.status(404).json(withRequestId({
+    return errorResponse(res, 404, withRequestId({
       success: false,
       error: {
         type: "AccountNotFound",
@@ -295,7 +308,7 @@ function errorHandler(err, req, res, next) {
   // AssetNotFound errors (asset lookup returned no results)
   if (err.isAssetNotFound) {
     logError(404, req, err.message);
-    return res.status(404).json(withRequestId({
+    return errorResponse(res, 404, withRequestId({
       success: false,
       error: {
         type: "AssetNotFound",
@@ -309,7 +322,7 @@ function errorHandler(err, req, res, next) {
   // TrustlineNotFound errors — specific asset trustline missing on an account
   if (err.isTrustlineNotFound) {
     logError(404, req, err.message);
-    return res.status(404).json(withRequestId({
+    return errorResponse(res, 404, withRequestId({
       success: false,
       error: {
         type: "TrustlineNotFound",
@@ -324,7 +337,7 @@ function errorHandler(err, req, res, next) {
   // (network error, missing file, or invalid format)
   if (err.isTomlFetchFailed) {
     logError(502, req, err.message);
-    return res.status(502).json(withRequestId({
+    return errorResponse(res, 502, withRequestId({
       success: false,
       error: {
         type: "TomlFetchFailed",
@@ -338,7 +351,7 @@ function errorHandler(err, req, res, next) {
   // InvalidAccountId errors — thrown by validateAccountId(id)
   if (err.isInvalidAccountId) {
     logError(400, req, err.message);
-    return res.status(400).json(withRequestId({
+    return errorResponse(res, 400, withRequestId({
       success: false,
       error: {
         type: "InvalidAccountId",
@@ -353,7 +366,7 @@ function errorHandler(err, req, res, next) {
   // InvalidAsset errors — thrown by validateAsset(code, issuer)
   if (err.isInvalidAsset) {
     logError(400, req, err.message);
-    return res.status(400).json(withRequestId({
+    return errorResponse(res, 400, withRequestId({
       success: false,
       error: {
         type: "InvalidAsset",
@@ -366,7 +379,7 @@ function errorHandler(err, req, res, next) {
   // InvalidCursor errors — thrown by validateCursor()
   if (err.isInvalidCursor) {
     logError(400, req, err.message);
-    return res.status(400).json(withRequestId({
+    return errorResponse(res, 400, withRequestId({
       success: false,
       error: {
         type: "InvalidCursor",
@@ -380,7 +393,7 @@ function errorHandler(err, req, res, next) {
   // InvalidLimit errors — thrown by validateLimit()
   if (err.isInvalidLimit) {
     logError(400, req, err.message);
-    return res.status(400).json(withRequestId({
+    return errorResponse(res, 400, withRequestId({
       success: false,
       error: {
         type: "InvalidLimit",
@@ -393,7 +406,7 @@ function errorHandler(err, req, res, next) {
   // Horizon timeout errors (Horizon node did not respond in time)
   if (isHorizonTimeoutError(err)) {
     logError(504, req, HORIZON_TIMEOUT_MESSAGE);
-    return res.status(504).json(withRequestId({
+    return errorResponse(res, 504, withRequestId({
       success: false,
       error: {
         type: "HorizonTimeout",
@@ -413,7 +426,7 @@ function errorHandler(err, req, res, next) {
       err.expectedFormat ? `Expected format: ${err.expectedFormat}` : null
     );
     logError(400, req, err.message);
-    return res.status(400).json(withRequestId({
+    return errorResponse(res, 400, withRequestId({
       success: false,
       error: {
         ...ske.toJSON(),
@@ -432,7 +445,7 @@ function errorHandler(err, req, res, next) {
       : err.message;
   const skeGeneric = new StellarKitError(message, status, "ServerError", null, err.suggestion || null);
   logError(status, req, err.message);
-  return res.status(status).json(withRequestId({
+  return errorResponse(res, status, withRequestId({
     success: false,
     error: skeGeneric.toJSON(),
   }, req));

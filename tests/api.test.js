@@ -391,19 +391,18 @@ image = "https://example.com/test.png"
   });
 
   describe("Content-Type validation", () => {
-    it("returns 400 when a POST request sends a non-JSON body", async () => {
+    it("returns 415 when a POST request sends a non-JSON body", async () => {
       const res = await request(app)
         .post("/future-route")
         .set("Content-Type", "text/plain")
         .send("not json");
 
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBe(415);
       expect(res.body).toEqual({
         success: false,
         error: {
-          type: "ValidationError",
-          message:
-            "Content-Type must be application/json for requests with a body.",
+          type: "InvalidContentType",
+          message: "Content-Type must be application/json.",
         },
       });
     });
@@ -1695,52 +1694,50 @@ describe("GET /account/:id/trustlines", () => {
   });
 });
 
-  // ── Ledger Sequence to Date Converter ────────────────────────────────────
-  describe("GET /account/ledger/:sequence/date", () => {
-    it("returns approximate date for a valid ledger sequence", async () => {
-      const res = await request(app)
-        .get("/account/ledger/50000000/date")
-        .expect(200);
+describe("GET /account/ledger/:sequence/date", () => {
+  it("returns approximate date for a valid ledger sequence", async () => {
+    const res = await request(app)
+      .get("/account/ledger/50000000/date")
+      .expect(200);
 
-      expect(res.body.success).toBe(true);
-      expect(res.body.data.sequence).toBe(50000000);
-      expect(res.body.data.approximate_date).toBeDefined();
-      expect(res.body.data.unix_timestamp).toBeDefined();
-      expect(res.body.data.human_readable).toBeDefined();
-      expect(res.body.data.note).toContain("approximate");
-    });
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.sequence).toBe(50000000);
+    expect(res.body.data.approximate_date).toBeDefined();
+    expect(res.body.data.unix_timestamp).toBeDefined();
+    expect(res.body.data.human_readable).toBeDefined();
+    expect(res.body.data.note).toContain("approximate");
+  });
 
-    it("returns correct genesis date for sequence 1", async () => {
-      const res = await request(app)
-        .get("/account/ledger/1/date")
-        .expect(200);
+  it("returns correct genesis date for sequence 1", async () => {
+    const res = await request(app)
+      .get("/account/ledger/1/date")
+      .expect(200);
 
-      expect(res.body.data.approximate_date).toBe("2015-09-30T00:00:00.000Z");
-    });
+    expect(res.body.data.approximate_date).toBe("2015-09-30T00:00:00.000Z");
+  });
 
-    it("returns 400 for non-numeric sequence", async () => {
-      const res = await request(app)
-        .get("/account/ledger/abc/date")
-        .expect(400);
+  it("returns 400 for non-numeric sequence", async () => {
+    const res = await request(app)
+      .get("/account/ledger/abc/date")
+      .expect(400);
 
-      expect(res.body.success).toBe(false);
-      expect(res.body.error.field).toBe("sequence");
-    });
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.field).toBe("sequence");
+  });
 
-    it("returns 400 for sequence 0", async () => {
-      const res = await request(app)
-        .get("/account/ledger/0/date")
-        .expect(400);
+  it("returns 400 for sequence 0", async () => {
+    const res = await request(app)
+      .get("/account/ledger/0/date")
+      .expect(400);
 
-      expect(res.body.success).toBe(false);
-    });
+    expect(res.body.success).toBe(false);
+  });
 
-    it("returns 400 for negative sequence", async () => {
-      const res = await request(app)
-        .get("/account/ledger/-5/date")
-        .expect(400);
+  it("returns 400 for negative sequence", async () => {
+    const res = await request(app)
+      .get("/account/ledger/-5/date")
+      .expect(400);
 
-      expect(res.body.success).toBe(false);
-    });
+    expect(res.body.success).toBe(false);
   });
 });

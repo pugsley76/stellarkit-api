@@ -44,10 +44,12 @@ This project is ideal for:
 - [SDK Migration Guide](docs/sdk-migration.md) — migrating from the JavaScript SDK to the TypeScript SDK
 - [SDK README](sdk/README.md) — JavaScript client usage and method reference
 - [Getting Started Guide](docs/getting-started.md) - Set up the project and make your first API calls
+- [Production Deployment Guide](docs/deployment.md) - Deploy to production with Node.js, Docker, Railway, Render, or Fly.io
 - [API Design Guidelines](docs/api-design.md) - Design conventions and response patterns
 - [Response Format Guide](docs/response-format.md) - Standard response envelopes, pagination, and data formats
 - [Streaming Guide](docs/streaming.md) - SSE and WebSocket streaming endpoints, event payloads, reconnection, and clean close handling
 - [Caching Strategy](docs/caching-strategy.md) - Per-endpoint cache TTLs and configuration
+- [Logging Guide](docs/logging.md) - Log levels, configuration, structured log entry fields, JSON parsing, and production monitoring
 - [Error Reference](docs/error-reference.md) - All error types, status codes, and suggested fixes
 - [Error Codes](docs/error-codes.md) - HTTP status code reference with descriptions, scenarios, and sample responses
 - [Rate Limiting](docs/rate-limiting.md) - Default limits, configuration, response headers, and retry strategies
