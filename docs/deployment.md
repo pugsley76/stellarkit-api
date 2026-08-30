@@ -389,7 +389,7 @@ sudo certbot --nginx -d api.yourdomain.com
 
 ### Dockerfile
 
-Create a `Dockerfile` in the project root:
+A production-ready `Dockerfile` is included in the repository root. Build and run locally:
 
 ```dockerfile
 # Build stage

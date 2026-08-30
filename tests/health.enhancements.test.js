@@ -9,8 +9,26 @@
 
 const request = require("supertest");
 const app = require("../src/index");
+const { server } = require("../src/config/stellar");
+
+function mockHealthyHorizon() {
+  jest.spyOn(server, "serverInfo").mockResolvedValue({
+    horizon_version: "2.33.0",
+    core_version: "stellar-core 21.0.0",
+    network_passphrase: "Test SDF Network ; September 2015",
+    core_latest_ledger: 100,
+    history_latest_ledger: 100,
+  });
+}
 
 describe("GET /health — extended fields", () => {
+  beforeEach(() => {
+    mockHealthyHorizon();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
   it("returns 200 with success: true", async () => {
     const res = await request(app).get("/health");
     expect(res.statusCode).toBe(200);

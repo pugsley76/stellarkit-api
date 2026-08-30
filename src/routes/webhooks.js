@@ -3,6 +3,7 @@ const router  = express.Router();
 const webhookStore = require("../services/webhookStore");
 const { success }  = require("../utils/response");
 const StellarKitError = require("../utils/StellarKitError");
+const webhookSignatureAuth = require("../middleware/webhookSignatureAuth");
 
 /**
  * Validate a webhook registration request body.
@@ -28,7 +29,47 @@ function validateRegistration(body) {
   if (body.events.some((e) => typeof e !== "string" || e.trim() === "")) {
     return "Each event in the events array must be a non-empty string.";
   }
+  if (body.accountId !== undefined && body.accountId !== null) {
+    if (typeof body.accountId !== "string" || body.accountId.trim() === "") {
+      return "accountId must be a non-empty string when provided.";
+    }
+  }
+  if (body.minAmount !== undefined && body.minAmount !== null && body.minAmount !== "") {
+    const parsedMinAmount = Number(body.minAmount);
+    if (!Number.isFinite(parsedMinAmount) || parsedMinAmount < 0) {
+      return "minAmount must be a non-negative number or numeric string when provided.";
+    }
+  }
+  if (body.assetCode !== undefined && body.assetCode !== null && body.assetCode !== "") {
+    if (typeof body.assetCode !== "string" || body.assetCode.trim() === "") {
+      return "assetCode must be a non-empty string when provided.";
+    }
+  }
+  if (body.assetIssuer !== undefined && body.assetIssuer !== null && body.assetIssuer !== "") {
+    if (typeof body.assetIssuer !== "string" || body.assetIssuer.trim() === "") {
+      return "assetIssuer must be a non-empty string when provided.";
+    }
+  }
   return null;
+}
+
+/**
+ * Public list shape for a stored webhook entry.
+ *
+ * @param {object} entry
+ * @returns {{ webhookId: string, url: string, events: string[], accountId: string|null, createdAt: string }}
+ */
+function toWebhookListItem(entry) {
+  return {
+    webhookId: entry.webhookId,
+    url: entry.url,
+    events: entry.events,
+    accountId: entry.accountId ?? null,
+    minAmount: entry.minAmount ?? null,
+    assetCode: entry.assetCode ?? null,
+    assetIssuer: entry.assetIssuer ?? null,
+    createdAt: entry.createdAt || entry.registeredAt,
+  };
 }
 
 /**
@@ -56,7 +97,7 @@ function validateRegistration(body) {
  *
  * Response 400: { "success": false, "error": { "type": "ValidationError", ... } }
  */
-router.post("/", (req, res, next) => {
+router.post("/", webhookSignatureAuth, (req, res, next) => {
   try {
     const validationError = validateRegistration(req.body);
     if (validationError) {
@@ -64,8 +105,12 @@ router.post("/", (req, res, next) => {
     }
 
     const entry = webhookStore.register({
-      url:    req.body.url.trim(),
-      events: req.body.events.map((e) => String(e).trim()),
+      url:       req.body.url.trim(),
+      events:    req.body.events.map((e) => String(e).trim()),
+      accountId: req.body.accountId ? String(req.body.accountId).trim() : null,
+      minAmount: req.body.minAmount ?? null,
+      assetCode: req.body.assetCode ?? null,
+      assetIssuer: req.body.assetIssuer ?? null,
     });
 
     return res.status(201).json({ success: true, data: entry });
@@ -77,19 +122,23 @@ router.post("/", (req, res, next) => {
 /**
  * GET /webhooks
  *
- * List all registered webhooks.
+ * List registered webhooks. Optional `?accountId=` filters to that account only.
+ * An empty match returns `{ webhooks: [], total: 0 }` (never 404).
  *
  * Response 200:
  *   {
  *     "success": true,
  *     "data": {
- *       "webhooks": [...],
+ *       "webhooks": [
+ *         { "webhookId": "wh_...", "url": "...", "events": [...], "accountId": "G...", "createdAt": "..." }
+ *       ],
  *       "total": 2
  *     }
  *   }
  */
-router.get("/", (req, res) => {
-  const webhooks = webhookStore.list();
+router.get("/", webhookSignatureAuth, (req, res) => {
+  const accountId = typeof req.query.accountId === "string" ? req.query.accountId.trim() : "";
+  const webhooks = webhookStore.list(accountId || undefined).map(toWebhookListItem);
   return success(res, { webhooks, total: webhooks.length });
 });
 
@@ -116,7 +165,7 @@ router.get("/", (req, res) => {
  *     }
  *   }
  */
-router.delete("/:webhookId", (req, res, next) => {
+router.delete("/:webhookId", webhookSignatureAuth, (req, res, next) => {
   try {
     const { webhookId } = req.params;
 

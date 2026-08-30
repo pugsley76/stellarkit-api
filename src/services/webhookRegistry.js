@@ -1,95 +1,118 @@
-/**
- * In-memory webhook registry.
- *
- * Stores webhook subscriptions and provides helpers for registering new
- * entries and looking up subscriptions that match a given event type /
- * contract ID combination.
- *
- * The registry is intentionally kept in-memory for simplicity. In a
- * production deployment it would be backed by a persistent store (Redis,
- * Postgres, etc.) — swap out the `_webhooks` map for that layer without
- * changing the public interface.
- */
-
-const { randomUUID } = require("crypto");
-
-/** @type {Map<string, WebhookEntry>} */
-const _webhooks = new Map();
+const logger = require("../utils/logger");
 
 /**
- * @typedef {Object} WebhookEntry
- * @property {string} id          - Unique webhook ID (UUID v4).
- * @property {string} url         - Delivery target URL.
- * @property {string} event       - Event type, e.g. "contract.event".
- * @property {string|null} contractId - Soroban contract address to filter on
- *                                     (null means "all contracts").
- * @property {string} createdAt   - ISO 8601 creation timestamp.
- */
-
-/**
- * Register a new webhook subscription.
+ * In-memory webhook registry for storing webhook subscriptions.
+ * In a production system, this would be backed by a database.
  *
- * @param {object} opts
- * @param {string} opts.url        - Outbound delivery URL (must be https or http).
- * @param {string} opts.event      - Event type to subscribe to.
- * @param {string|null} [opts.contractId] - Optional contract ID filter.
- * @returns {WebhookEntry} The created entry.
+ * Structure:
+ * {
+ *   "accountId": {
+ *     "payment.received": [
+ *       { id: "webhook-id", url: "https://example.com/webhook", active: true, createdAt: "..." }
+ *     ]
+ *   }
+ * }
  */
-function register({ url, event, contractId = null }) {
-  const entry = {
-    id: randomUUID(),
-    url,
-    event,
-    contractId: contractId || null,
-    createdAt: new Date().toISOString(),
-  };
-  _webhooks.set(entry.id, entry);
-  return entry;
+class WebhookRegistry {
+  constructor() {
+    this.webhooks = {};
+  }
+
+  /**
+   * Register a webhook for a specific event type on an account.
+   * @param {string} accountId - The Stellar account ID
+   * @param {string} eventType - The event type (e.g., "payment.received")
+   * @param {string} url - The webhook URL to call
+   * @param {object} [filters={}] - Optional payment-specific filters
+   * @returns {Object} The registered webhook object with id
+   */
+  register(accountId, eventType, url, filters = {}) {
+    if (!this.webhooks[accountId]) {
+      this.webhooks[accountId] = {};
+    }
+
+    if (!this.webhooks[accountId][eventType]) {
+      this.webhooks[accountId][eventType] = [];
+    }
+
+    const minAmount = filters.minAmount === undefined || filters.minAmount === null || filters.minAmount === "" ? null : Number(filters.minAmount);
+    const webhook = {
+      id: `webhook_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      url,
+      active: true,
+      createdAt: new Date().toISOString(),
+      minAmount: Number.isFinite(minAmount) ? minAmount : null,
+      assetCode: typeof filters.assetCode === "string" && filters.assetCode.trim() !== "" ? filters.assetCode.trim() : null,
+      assetIssuer: typeof filters.assetIssuer === "string" && filters.assetIssuer.trim() !== "" ? filters.assetIssuer.trim() : null,
+    };
+
+    this.webhooks[accountId][eventType].push(webhook);
+    logger.info({ accountId, eventType, webhookId: webhook.id }, "Webhook registered");
+
+    return webhook;
+  }
+
+  /**
+   * Get all webhooks for a specific event type on an account.
+   * @param {string} accountId - The Stellar account ID
+   * @param {string} eventType - The event type (e.g., "payment.received")
+   * @returns {Array} Array of webhook objects
+   */
+  getWebhooks(accountId, eventType) {
+    if (!this.webhooks[accountId] || !this.webhooks[accountId][eventType]) {
+      return [];
+    }
+
+    return this.webhooks[accountId][eventType].filter((w) => w.active);
+  }
+
+  /**
+   * Unregister a webhook by ID.
+   * @param {string} accountId - The Stellar account ID
+   * @param {string} webhookId - The webhook ID
+   * @returns {boolean} True if webhook was found and deactivated
+   */
+  unregister(accountId, webhookId) {
+    if (!this.webhooks[accountId]) {
+      return false;
+    }
+
+    for (const eventType in this.webhooks[accountId]) {
+      const webhookIndex = this.webhooks[accountId][eventType].findIndex((w) => w.id === webhookId);
+      if (webhookIndex !== -1) {
+        this.webhooks[accountId][eventType][webhookIndex].active = false;
+        logger.info({ accountId, webhookId }, "Webhook unregistered");
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Get all webhooks for an account.
+   * @param {string} accountId - The Stellar account ID
+   * @returns {Object} Object with event types as keys and webhook arrays as values
+   */
+  getAllWebhooks(accountId) {
+    if (!this.webhooks[accountId]) {
+      return {};
+    }
+
+    const result = {};
+    for (const eventType in this.webhooks[accountId]) {
+      result[eventType] = this.webhooks[accountId][eventType].filter((w) => w.active);
+    }
+
+    return result;
+  }
+
+  /**
+   * Clear all webhooks (for testing).
+   */
+  clear() {
+    this.webhooks = {};
+  }
 }
 
-/**
- * Return all registered webhooks as an array.
- *
- * @returns {WebhookEntry[]}
- */
-function list() {
-  return Array.from(_webhooks.values());
-}
-
-/**
- * Find all webhooks that should be triggered for a given event and contractId.
- *
- * A webhook matches when:
- *   - Its `event` equals the provided `event`, AND
- *   - Its `contractId` is null (wildcard) OR equals the provided `contractId`.
- *
- * @param {string} event
- * @param {string} contractId
- * @returns {WebhookEntry[]}
- */
-function findMatching(event, contractId) {
-  return Array.from(_webhooks.values()).filter(
-    (wh) =>
-      wh.event === event &&
-      (wh.contractId === null || wh.contractId === contractId),
-  );
-}
-
-/**
- * Remove a webhook by ID. Returns true if it existed and was removed.
- *
- * @param {string} id
- * @returns {boolean}
- */
-function remove(id) {
-  return _webhooks.delete(id);
-}
-
-/**
- * Clear all webhooks (used in tests).
- */
-function clear() {
-  _webhooks.clear();
-}
-
-module.exports = { register, list, findMatching, remove, clear };
+module.exports = new WebhookRegistry();

@@ -18,6 +18,7 @@
  */
 
 const logger = require("../utils/logger");
+const metricsService = require("../services/metrics");
 
 /**
  * Record the start of a Horizon call on the request object.
@@ -42,6 +43,9 @@ function stopHorizonTimer(req) {
   req._horizonCallStart = undefined;
   req.horizonResponseTimeMs = Math.round(((req.horizonResponseTimeMs || 0) + elapsed) * 1000) / 1000;
 }
+
+const SLOW_REQUEST_THRESHOLD_MS =
+  parseInt(process.env.SLOW_REQUEST_THRESHOLD_MS, 10) || 2000;
 
 function requestLogger(req, res, next) {
   const start = process.hrtime.bigint();
@@ -68,6 +72,15 @@ function requestLogger(req, res, next) {
       fields,
       `[${requestId}] ${method} ${path} ${statusCode} ${responseTimeMs}ms`,
     );
+
+    // Record response time for slowest-endpoint tracking.
+    // Use the Express matched route pattern when available so dynamic segments
+    // like /account/:id are grouped together rather than tracked per unique ID.
+    const routePattern =
+      (req.route && req.route.path)
+        ? (req.baseUrl || "") + req.route.path
+        : req.path;
+    metricsService.recordResponseTime(method, routePattern, responseTimeMs);
   });
 
   next();

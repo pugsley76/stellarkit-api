@@ -23,6 +23,13 @@ describe("StellarKit API", () => {
     });
 
     it("warms network-status and fee-estimate on startup so the next request is a cache hit", async () => {
+      jest.spyOn(server, "serverInfo").mockResolvedValue({
+        horizon_version: "2.33.0",
+        core_version: "stellar-core 21.0.0",
+        network_passphrase: "Test SDF Network ; September 2015",
+        core_latest_ledger: 12345,
+        history_latest_ledger: 12345,
+      });
       jest.spyOn(server, "ledgers").mockReturnValue({
         order: jest.fn().mockReturnThis(),
         limit: jest.fn().mockReturnThis(),
@@ -76,6 +83,20 @@ describe("StellarKit API", () => {
 
   // ── Health ─────────────────────────────────────────────────────────────────
   describe("GET /health", () => {
+    beforeEach(() => {
+      jest.spyOn(server, "serverInfo").mockResolvedValue({
+        horizon_version: "2.33.0",
+        core_version: "stellar-core 21.0.0",
+        network_passphrase: "Test SDF Network ; September 2015",
+        core_latest_ledger: 1,
+        history_latest_ledger: 1,
+      });
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
     it("returns 200 with required health fields", async () => {
       const res = await request(app).get("/health");
 
@@ -113,6 +134,11 @@ describe("StellarKit API", () => {
       } else {
         process.env.NODE_ENV = originalNodeEnv;
       }
+      jest.restoreAllMocks();
+    });
+
+    beforeEach(() => {
+      jest.spyOn(server, "serverInfo").mockResolvedValue({ horizon_version: "2.33.0" });
     });
 
     it("returns CORS headers for configured origins and supports preflight requests", async () => {
@@ -148,10 +174,30 @@ describe("StellarKit API", () => {
       expect(res.headers["access-control-allow-origin"]).toBe("*");
     });
 
-    it("returns and echoes a request ID header", async () => {
+    it("returns and echoes a valid request ID header", async () => {
       const res = await request(app).get("/health").set("X-Request-ID", "req-123");
       expect(res.statusCode).toBe(200);
       expect(res.headers["x-request-id"]).toBe("req-123");
+    });
+
+    it("generates a new UUID when request ID header is oversized", async () => {
+      const res = await request(app)
+        .get("/health")
+        .set("X-Request-ID", "a".repeat(150));
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["x-request-id"]).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      );
+    });
+
+    it("generates a new UUID when request ID header contains invalid characters", async () => {
+      const res = await request(app)
+        .get("/health")
+        .set("X-Request-ID", "invalid;id<script>");
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["x-request-id"]).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      );
     });
   });
 
@@ -975,17 +1021,19 @@ image = "https://example.com/test.png"
   });
 
   // ── HTTP Parameter Pollution ────────────────────────────────────────────────
-  describe("HTTP Parameter Pollution (hpp) protection", () => {
-    it("handles duplicate non-whitelisted params safely", async () => {
+  describe("HTTP Parameter Pollution protection", () => {
+    it("rejects duplicate non-whitelisted params with 400", async () => {
       const res = await request(app).get("/health?foo=1&foo=2");
-      expect(res.statusCode).toBe(200);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.type).toBe("DuplicateParameter");
     });
 
-    it("handles duplicate whitelisted params safely", async () => {
+    it("rejects duplicate whitelisted params with 400", async () => {
       const res = await request(app).get(
         "/fee-estimate?operations=1&operations=2",
       );
-      expect(res.statusCode).toBe(200);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.type).toBe("DuplicateParameter");
     });
   });
 

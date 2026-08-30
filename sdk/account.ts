@@ -263,7 +263,19 @@ export class AccountModule {
     if (!id || typeof id !== "string" || id.trim() === "") {
       throw new StellarKitError("id is required and must be a non-empty string", 400, "ValidationError");
     }
-    return this._get<NativeBalance>(`/account/${id}/native-balance`);
+
+    try {
+      return await this._get<NativeBalance>(`/account/${id}/native-balance`);
+    } catch (err) {
+      if (err instanceof StellarKitError && err.status === 404) {
+        throw new StellarKitError(
+          err.message || `Account ${id} was not found.`,
+          404,
+          "AccountNotFound",
+        );
+      }
+      throw err;
+    }
   }
 
   /**
@@ -651,11 +663,67 @@ export class AccountModule {
     if (!id || typeof id !== "string" || id.trim() === "") {
       throw new StellarKitError("id is required and must be a non-empty string", 400, "ValidationError");
     }
+    const params: Record<string, string | number | undefined> = {};
+    if (options?.limit !== undefined) params.limit = options.limit;
+    if (options?.cursor) params.cursor = options.cursor;
+    if (options?.type) params.type = options.type;
+    return this._get<PaginatedResponse<Effect>>(`/account/${id}/effects`, params);
+  }
+
+  /**
+   * A single trade record returned by `AccountModule.getTrades`.
+   */
+
+  /**
+   * Get trades executed by an account.
+   *
+   * Calls `GET /account/:id/trades` and returns a paginated list of trades.
+   * All optional filters (limit, cursor, startDate, endDate) are forwarded as
+   * query parameters when provided.
+   *
+   * @param id - Stellar account public key (non-empty string).
+   * @param options - Optional pagination and filter options.
+   * @param options.limit - Maximum number of trades to return (default: 20, max: 100).
+   * @param options.cursor - Pagination cursor from a previous response.
+   * @param options.startDate - ISO 8601 start date to filter trades on or after this date.
+   * @param options.endDate - ISO 8601 end date to filter trades on or before this date.
+   * @returns Resolves to a `PaginatedResponse` containing trade records.
+   * @throws {StellarKitError} If `id` is missing/empty, or on a non-2xx API response.
+   *
+   * @example
+   * const account = new AccountModule({ baseUrl: "http://localhost:3000" });
+   * const trades = await account.getTrades("GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN");
+   *
+   * @example
+   * // With filters
+   * const filtered = await account.getTrades("GAAZI4...", {
+   *   limit: 50,
+   *   cursor: "12345",
+   *   startDate: "2024-01-01",
+   *   endDate: "2024-12-31",
+   * });
+   */
+  async getTrades(
+    id: string,
+    options?: {
+      limit?: number;
+      cursor?: string;
+      startDate?: string;
+      endDate?: string;
+    },
+  ): Promise<PaginatedResponse<Record<string, unknown>>> {
+    if (!id || typeof id !== "string" || id.trim() === "") {
+      throw new StellarKitError("id is required and must be a non-empty string", 400, "ValidationError");
+    }
     const params: Record<string, string | number | undefined> = {
       limit: options?.limit,
       cursor: options?.cursor,
-      type: options?.type,
+      startDate: options?.startDate,
+      endDate: options?.endDate,
     };
-    return this._get<PaginatedResponse<Effect>>(`/account/${id}/effects`, params);
+    return this._get<PaginatedResponse<Record<string, unknown>>>(
+      `/account/${id}/trades`,
+      params,
+    );
   }
 }
